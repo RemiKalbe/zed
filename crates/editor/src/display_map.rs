@@ -879,6 +879,15 @@ impl DisplaySnapshot {
         DisplayPoint(block_point)
     }
 
+    pub fn point_to_display_point2(&self, point: MultiBufferPoint, bias: Bias) -> DisplayPoint {
+        let inlay_point = self.inlay_snapshot().to_inlay_point(point);
+        let fold_point = dbg!(self.fold_snapshot().to_fold_point(inlay_point, bias));
+        let tab_point = self.tab_snapshot().to_tab_point(fold_point);
+        let wrap_point = self.wrap_snapshot().tab_point_to_wrap_point(tab_point);
+        let block_point = self.block_snapshot.to_block_point(wrap_point);
+        DisplayPoint(block_point)
+    }
+
     pub fn display_point_to_point(&self, point: DisplayPoint, bias: Bias) -> Point {
         self.inlay_snapshot()
             .to_buffer_point(self.display_point_to_inlay_point(point, bias))

@@ -157,16 +157,11 @@ impl Editor {
                 .to_display_point(&display_map)
                 .row()
                 .as_f64();
-            target_bottom = dbg!(
-                selections
-                    .last()
-                    .unwrap()
-                    .head()
-                    .to_display_point(&display_map)
-            )
-            .row()
-            .next_row()
-            .as_f64();
+            target_bottom = display_map
+                .point_to_display_point2(selections.last().unwrap().head(), text::Bias::Left)
+                .row()
+                .next_row()
+                .as_f64();
 
             let selections_fit = target_bottom - target_top <= visible_lines;
             if matches!(

@@ -643,6 +643,7 @@ impl InlayMap {
             retain
         });
 
+        dbg!((self.inlays.len(), to_insert.len(), edits.len()));
         for inlay_to_insert in to_insert {
             // Avoid inserting empty inlays.
             if inlay_to_insert.text().is_empty() {
@@ -650,12 +651,20 @@ impl InlayMap {
             }
 
             let offset = inlay_to_insert.position.to_offset(&snapshot.buffer);
-            match self.inlays.binary_search_by(|probe| {
+            let a = self.inlays.binary_search_by(|probe| {
                 probe
                     .position
                     .cmp(&inlay_to_insert.position, &snapshot.buffer)
                     .then(std::cmp::Ordering::Less)
-            }) {
+            });
+            dbg!((
+                inlay_to_insert.id,
+                inlay_to_insert.text(),
+                &inlay_to_insert.position,
+                offset,
+                a
+            ));
+            match a {
                 Ok(ix) | Err(ix) => {
                     self.inlays.insert(ix, inlay_to_insert);
                 }
@@ -664,14 +673,19 @@ impl InlayMap {
             edits.insert(offset);
         }
 
+        let mut e = Vec::new();
+        let buffer_snapshot = snapshot.buffer.clone();
         let buffer_edits = edits
             .into_iter()
-            .map(|offset| Edit {
-                old: offset..offset,
-                new: offset..offset,
+            .map(|offset| {
+                e.push((offset, buffer_snapshot.offset_to_point(offset)));
+                Edit {
+                    old: offset..offset,
+                    new: offset..offset,
+                }
             })
             .collect();
-        let buffer_snapshot = snapshot.buffer.clone();
+        dbg!(e);
         let (snapshot, edits) = self.sync(buffer_snapshot, buffer_edits);
         (snapshot, edits)
     }

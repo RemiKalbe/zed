@@ -5239,6 +5239,20 @@ impl MultiBufferSnapshot {
     ) -> Option<Anchor> {
         let excerpt_id = self.latest_excerpt_id(excerpt_id);
         let excerpt = self.excerpt(excerpt_id)?;
+
+        // todo(lw): consider buffer id being None -> min or max anchor needs special handling
+        let context = &excerpt.range.context;
+        dbg!(&text_anchor, &excerpt.range.context);
+        if dbg!(
+            text_anchor
+                .buffer_id
+                .is_some_and(|buffer_id| buffer_id != excerpt.buffer_id)
+        ) || context.start.cmp(&text_anchor, &excerpt.buffer).is_gt()
+            || context.end.cmp(&text_anchor, &excerpt.buffer).is_lt()
+        {
+            return None;
+        }
+
         Some(Anchor::in_buffer(
             excerpt_id,
             excerpt.buffer_id,

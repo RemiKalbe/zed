@@ -241,34 +241,36 @@ impl Editor {
                             new_entry.0.clear();
                             new_entry.1 = colors.cache_version;
                         } else {
-                            for color in colors.colors {
+                            for color in dbg!(colors.colors) {
                                 let color_start = point_from_lsp(color.lsp_range.start);
                                 let color_end = point_from_lsp(color.lsp_range.end);
 
+                                dbg!(excerpts.len());
                                 for (excerpt_id, buffer_snapshot, excerpt_range) in excerpts {
                                     if !excerpt_range.contains(&color_start.0)
                                         || !excerpt_range.contains(&color_end.0)
                                     {
                                         continue;
                                     }
-                                    let Some(color_start_anchor) = multi_buffer_snapshot
-                                        .anchor_in_excerpt(
+                                    dbg!(&excerpt_range);
+                                    let Some(color_start_anchor) =
+                                        dbg!(multi_buffer_snapshot.anchor_in_excerpt(
                                             *excerpt_id,
-                                            buffer_snapshot.anchor_before(
+                                            dbg!(buffer_snapshot.anchor_before(dbg!(
                                                 buffer_snapshot
-                                                    .clip_point_utf16(color_start, Bias::Left),
-                                            ),
-                                        )
+                                                    .clip_point_utf16(color_start, Bias::Left)
+                                            )),),
+                                        ))
                                     else {
                                         continue;
                                     };
                                     let Some(color_end_anchor) = multi_buffer_snapshot
                                         .anchor_in_excerpt(
                                             *excerpt_id,
-                                            buffer_snapshot.anchor_after(
+                                            buffer_snapshot.anchor_after(dbg!(
                                                 buffer_snapshot
-                                                    .clip_point_utf16(color_end, Bias::Right),
-                                            ),
+                                                    .clip_point_utf16(color_end, Bias::Right)
+                                            )),
                                         )
                                     else {
                                         continue;

@@ -18,7 +18,7 @@ use project::{
     InvalidationStrategy, ResolveState,
     lsp_store::{CacheInlayHints, ResolvedHint},
 };
-use text::{Bias, BufferId};
+use text::{Bias, BufferId, ToPoint};
 use ui::{Context, Window};
 use util::debug_panic;
 
@@ -729,14 +729,36 @@ impl Editor {
                         .insert(hint_id, lsp_hint.kind)
                         .is_none()
                 {
-                    let position = excerpts_queried.iter().find_map(|excerpt_id| {
+                    dbg!(&excerpts_queried);
+                    let position = dbg!(excerpts_queried.iter().find_map(|excerpt_id| {
                         multi_buffer_snapshot.anchor_in_excerpt(*excerpt_id, lsp_hint.position)
-                    })?;
+                    }))?;
                     return Some(Inlay::hint(hint_id, position, &lsp_hint));
                 }
                 None
             })
             .collect::<Vec<_>>();
+        {
+            let buffer = self.buffer.read(cx).buffer(buffer_id).unwrap();
+            let buffer_snapshot = buffer.read(cx).snapshot();
+            let hints_to_insert = hints_to_insert
+                .iter()
+                .map(|inlay| {
+                    (
+                        inlay.id,
+                        inlay.text().to_string(),
+                        inlay.position.text_anchor.to_point(&buffer_snapshot),
+                    )
+                })
+                .collect::<Vec<_>>();
+            dbg!(
+                &excerpts_queried,
+                &hints_to_remove.len(),
+                hints_to_insert,
+                &query_version,
+                &buffer_snapshot.version,
+            );
+        }
         self.splice_inlays(&hints_to_remove, hints_to_insert, cx);
     }
 }
@@ -3224,6 +3246,143 @@ pub mod tests {
                     "Editor inlay hints should repeat server's order when placed at the same spot"
                 );
                 assert_eq!(expected_hints, visible_hint_labels(editor, cx));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_simple_multi_buffer(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |settings| {
+            settings.defaults.inlay_hints = Some(InlayHintSettingsContent {
+                enabled: Some(true),
+                ..InlayHintSettingsContent::default()
+            })
+        });
+
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/a"),
+            json!({
+                "main.rs": r#"fn main() {
+    let x = 1;
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    ////
+    let x = "2";
+    }"#}),
+        )
+        .await;
+
+        let project = Project::test(fs, [path!("/a").as_ref()], cx).await;
+
+        let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+        let language = rust_lang();
+        language_registry.add(language);
+        let mut fake_servers = language_registry.register_fake_lsp(
+            "Rust",
+            FakeLspAdapter {
+                capabilities: lsp::ServerCapabilities {
+                    inlay_hint_provider: Some(lsp::OneOf::Left(true)),
+                    ..lsp::ServerCapabilities::default()
+                },
+                initializer: Some(Box::new(|fake_server| {
+                    fake_server.set_request_handler::<lsp::request::InlayHintRequest, _, _>(
+                        move |_, _| async move {
+                            Ok(Some(vec![
+                                lsp::InlayHint {
+                                    position: lsp::Position {
+                                        line: 1,
+                                        character: 9,
+                                    },
+                                    label: lsp::InlayHintLabel::String(": i32".to_string()),
+                                    kind: Some(lsp::InlayHintKind::TYPE),
+                                    text_edits: None,
+                                    tooltip: None,
+                                    padding_left: None,
+                                    padding_right: None,
+                                    data: None,
+                                },
+                                lsp::InlayHint {
+                                    position: lsp::Position {
+                                        line: 19,
+                                        character: 9,
+                                    },
+                                    label: lsp::InlayHintLabel::String(": &str".to_string()),
+                                    kind: Some(lsp::InlayHintKind::TYPE),
+                                    text_edits: None,
+                                    tooltip: None,
+                                    padding_left: None,
+                                    padding_right: None,
+                                    data: None,
+                                },
+                            ]))
+                        },
+                    );
+                })),
+                ..FakeLspAdapter::default()
+            },
+        );
+
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/a/main.rs"), cx)
+            })
+            .await
+            .unwrap();
+        let multi_buffer = cx.new(|_| MultiBuffer::new(Capability::ReadWrite));
+
+        let task = multi_buffer.update(cx, |multi_buffer, cx| {
+            let buffer_snapshot = buffer.read(cx).snapshot();
+            multi_buffer.set_anchored_excerpts_for_path(
+                buffer.clone(),
+                vec![
+                    buffer_snapshot.anchor_before(Point::new(1, 9))
+                        ..buffer_snapshot.anchor_after(Point::new(1, 9)),
+                    buffer_snapshot.anchor_before(Point::new(19, 9))
+                        ..buffer_snapshot.anchor_after(Point::new(19, 9)),
+                ],
+                3,
+                cx,
+            )
+        });
+
+        dbg!(task.await);
+
+        cx.executor().run_until_parked();
+        let editor = cx.add_window(|window, cx| {
+            Editor::for_multibuffer(multi_buffer, Some(project.clone()), window, cx)
+        });
+
+        let _fake_server = fake_servers.next().await.unwrap();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.executor().run_until_parked();
+
+        editor
+            .update(cx, |editor, _window, cx| {
+                let expected_hints = vec![
+                    ": &str".to_string(),
+                    ": i32".to_string(),
+                ];
+                assert_eq!(
+                    expected_hints,
+                    sorted_cached_hint_labels(editor, cx),
+                    "When scroll is at the edge of a multibuffer, its visible excerpts only should be queried for inlay hints"
+                );
+                assert_eq!(expected_hints, dbg!(visible_hint_labels(editor, cx)));
             })
             .unwrap();
     }

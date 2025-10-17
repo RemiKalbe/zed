@@ -49,7 +49,7 @@ pub struct LspInlayHintData {
     invalidate_debounce: Option<Duration>,
     append_debounce: Option<Duration>,
     hint_refresh_tasks: HashMap<BufferId, Vec<Task<()>>>,
-    hint_chunk_fetched: HashMap<BufferId, (Global, HashSet<Range<BufferRow>>)>,
+    hint_chunk_fetched: HashMap<BufferId, (Global, HashMap<ExcerptId, HashSet<Range<BufferRow>>>)>,
     pub added_hints: HashMap<InlayId, Option<InlayHintKind>>,
 }
 
@@ -648,7 +648,13 @@ impl Editor {
                     .hint_chunk_fetched
                     .get(&buffer_id)
                     .filter(|_| !ignore_previous_fetches && !invalidate_cache.should_invalidate())
-                    .cloned(),
+                    .cloned()
+                    .map(|(buffer_version, excerpt_ranges)| {
+                        (
+                            buffer_version,
+                            excerpt_ranges.into_values().flatten().collect(),
+                        )
+                    }),
                 cx,
             )
             .unwrap_or_default();
@@ -662,7 +668,15 @@ impl Editor {
 
         let mut hint_tasks = Vec::new();
         for (row_range, new_hints_task) in new_hint_tasks {
-            if known_chunks.insert(row_range.clone()) || ignore_previous_fetches {
+            let mut inserted = false;
+            for excerpt in &buffer_excerpts.excerpts {
+                inserted |= known_chunks
+                    .entry(*excerpt)
+                    .or_default()
+                    .insert(row_range.clone());
+            }
+
+            if inserted || ignore_previous_fetches {
                 hint_tasks.push(cx.spawn(async move |_, _| (row_range, new_hints_task.await)));
             }
         }
@@ -714,7 +728,10 @@ impl Editor {
                         inlay_hints.hint_chunk_fetched.get_mut(&buffer_id)
                     {
                         if for_version == &query_version {
-                            chunks_fetched.remove(&chunk_range);
+                            chunks_fetched.retain(|_, queried_ranges| {
+                                queried_ranges.remove(&chunk_range);
+                                !queried_ranges.is_empty()
+                            });
                         }
                     }
                     None
@@ -729,6 +746,9 @@ impl Editor {
                         .insert(hint_id, lsp_hint.kind)
                         .is_none()
                 {
+                    // TODO kb: chunk range may bring more hints than all visible excerpts can accept, but other, hidden, excerpts may accept them.
+                    // Try and add more hints?
+                    // TODO kb: `let ` query re-submitted causes panics
                     dbg!(&excerpts_queried);
                     let position = dbg!(excerpts_queried.iter().find_map(|excerpt_id| {
                         multi_buffer_snapshot.anchor_in_excerpt(*excerpt_id, lsp_hint.position)
@@ -2367,26 +2387,34 @@ pub mod tests {
         cx.executor().run_until_parked();
         editor
             .update(cx, |editor, _window, cx| {
-                let expected_hints = vec![
-                    "main hint(edited) #0".to_string(),
-                    "main hint(edited) #1".to_string(),
-                    "main hint(edited) #2".to_string(),
-                    "main hint(edited) #3".to_string(),
-                    "main hint(edited) #4".to_string(),
-                    "main hint(edited) #5".to_string(),
-                    "other hint(edited) #0".to_string(),
-                    "other hint(edited) #1".to_string(),
-                    "other hint(edited) #2".to_string(),
-                    "other hint(edited) #3".to_string(),
-                ];
                 assert_eq!(
-                    expected_hints,
+                    vec![
+                        "main hint(edited) #0".to_string(),
+                        "main hint(edited) #1".to_string(),
+                        "main hint(edited) #2".to_string(),
+                        "main hint(edited) #3".to_string(),
+                        "main hint(edited) #4".to_string(),
+                        "main hint(edited) #5".to_string(),
+                        "other hint(edited) #0".to_string(),
+                        "other hint(edited) #1".to_string(),
+                        "other hint(edited) #2".to_string(),
+                        "other hint(edited) #3".to_string(),
+                    ],
                     sorted_cached_hint_labels(editor, cx),
                     "After multibuffer edit, editor gets scrolled back to the last selection; \
                 all hints should be invalidated and required for all of its visible excerpts"
                 );
                 assert_eq!(
-                    expected_hints,
+                    vec![
+                        "main hint(edited) #0".to_string(),
+                        "main hint(edited) #1".to_string(),
+                        "main hint(edited) #2".to_string(),
+                        "main hint(edited) #3".to_string(),
+                        "main hint(edited) #4".to_string(),
+                        "main hint(edited) #5".to_string(),
+                        "other hint(edited) #0".to_string(),
+                        "other hint(edited) #1".to_string(),
+                    ],
                     visible_hint_labels(editor, cx),
                     "Only the visible hints should be shown after editing + in multi buffers, only where the selections are, the hints are shown"
                 );
@@ -2618,9 +2646,6 @@ pub mod tests {
                 assert_eq!(
                     vec![
                         "main hint #0".to_string(),
-                        "main hint #1".to_string(),
-                        "main hint #2".to_string(),
-                        "main hint #3".to_string(),
                     ],
                     visible_hint_labels(editor, cx),
                     "Settings change should make cached hints visible, but only the visible ones, from the remaining excerpt"

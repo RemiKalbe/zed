@@ -82,6 +82,10 @@ pub trait Dimension<'a, S: Summary>: Clone {
     fn zero(cx: S::Context<'_>) -> Self;
 
     fn add_summary(&mut self, summary: &'a S, cx: S::Context<'_>);
+    fn with_added_summary(mut self, summary: &'a S, cx: S::Context<'_>) -> Self {
+        self.add_summary(summary, cx);
+        self
+    }
 
     fn from_summary(summary: &'a S, cx: S::Context<'_>) -> Self {
         let mut dimension = Self::zero(cx);
@@ -371,12 +375,90 @@ impl<T: Item> SumTree<T> {
         Iter::new(self)
     }
 
-    pub fn cursor<'a, 'b, S>(
+    /// A more efficient version of `Cursor::new()` + `Cursor::seek()` + `Cursor::item()`
+    pub fn find<'a, 'slf: 'a, D, Target>(
+        &'slf self,
+        cx: <T::Summary as Summary>::Context<'a>,
+        target: &Target,
+        bias: Bias,
+    ) -> (D, D, Option<&'slf T>)
+    where
+        D: Dimension<'a, T::Summary>,
+        Target: SeekTarget<'a, T::Summary, D>,
+    {
+        let tree_end = D::zero(cx).with_added_summary(self.summary(), cx);
+        let comparison = target.cmp(&tree_end, cx);
+        if comparison == Ordering::Greater || (comparison == Ordering::Equal && bias == Bias::Right)
+        {
+            return (tree_end.clone(), tree_end, None);
+        }
+
+        let mut pos = D::zero(cx);
+        return match find_recurse(cx, target, bias, &mut pos, self) {
+            Some((item, end)) => (pos, end, Some(item)),
+            None => (pos.clone(), pos, None),
+        };
+
+        fn find_recurse<'tree: 'a, 'a, T, D, Target>(
+            cx: <T::Summary as Summary>::Context<'a>,
+            target: &Target,
+            bias: Bias,
+            position: &mut D,
+            this: &'tree SumTree<T>,
+        ) -> Option<(&'tree T, D)>
+        where
+            T: Item,
+            D: Dimension<'a, T::Summary>,
+            Target: SeekTarget<'a, T::Summary, D>,
+        {
+            match &*this.0 {
+                Node::Internal {
+                    child_summaries,
+                    child_trees,
+                    ..
+                } => {
+                    for (child_tree, child_summary) in child_trees.iter().zip(child_summaries) {
+                        let child_end = position.clone().with_added_summary(child_summary, cx);
+
+                        let comparison = target.cmp(&child_end, cx);
+                        let target_in_child = comparison == Ordering::Less
+                            || (comparison == Ordering::Equal && bias == Bias::Left);
+                        if target_in_child {
+                            return find_recurse(cx, target, bias, position, child_tree);
+                        }
+                        *position = child_end;
+                    }
+                }
+                Node::Leaf {
+                    items,
+                    item_summaries,
+                    ..
+                } => {
+                    for (item, item_summary) in items.iter().zip(item_summaries) {
+                        let mut child_end = position.clone();
+                        child_end.add_summary(item_summary, cx);
+
+                        let comparison = target.cmp(&child_end, cx);
+                        let entry_found = comparison == Ordering::Less
+                            || (comparison == Ordering::Equal && bias == Bias::Left);
+                        if entry_found {
+                            return Some((item, child_end));
+                        }
+
+                        *position = child_end;
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    pub fn cursor<'a, 'b, D>(
         &'a self,
         cx: <T::Summary as Summary>::Context<'b>,
-    ) -> Cursor<'a, 'b, T, S>
+    ) -> Cursor<'a, 'b, T, D>
     where
-        S: Dimension<'a, T::Summary>,
+        D: Dimension<'a, T::Summary>,
     {
         Cursor::new(self, cx)
     }
@@ -787,9 +869,8 @@ impl<T: KeyedItem> SumTree<T> {
         key: &T::Key,
         cx: <T::Summary as Summary>::Context<'a>,
     ) -> Option<&'a T> {
-        let mut cursor = self.cursor::<T::Key>(cx);
-        if cursor.seek(key, Bias::Left) {
-            cursor.item()
+        if let (_, _, Some(item)) = self.find::<T::Key, _>(cx, key, Bias::Left) {
+            Some(item)
         } else {
             None
         }

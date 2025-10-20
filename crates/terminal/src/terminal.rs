@@ -515,10 +515,8 @@ impl TerminalBuilder {
                 working_directory: working_directory.clone(),
                 drain_on_exit: true,
                 env: env.clone().into_iter().collect(),
-                // We do not want to escape arguments if we are using CMD as our shell.
-                // If we do we end up with too many quotes/escaped quotes for CMD to handle.
                 #[cfg(windows)]
-                escape_args: shell_kind != util::shell::ShellKind::Cmd,
+                escape_args: shell_kind.tty_escape_args(),
             }
         };
 
